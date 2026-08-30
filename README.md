@@ -1,4 +1,4 @@
-# CAN-Secure: Arquitectura Técnica y Metodológica Mejorada
+# CAN-Secure
 
 ## 0. Resumen de decisiones clave
 
