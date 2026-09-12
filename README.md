@@ -5,10 +5,11 @@
 | Decisión | Elección | Justificación breve |
 |---|---|---|
 | Formato de trama | **Frame dividido (Opción A)** sobre CAN clásico | Compatible con hardware existente, fiel al objetivo de no requerir rediseño |
-| Esquema de autenticación | HMAC-SHA256 truncado a 64 bits | Balance simplicidad/seguridad vs. alternativas evaluadas (ver sección 5) |
-| Anti-replay | Contador de secuencia por ID | Bloquea reenvío de tramas capturadas con MAC válido |
+| Esquema de autenticación | HMAC-SHA256 completo (256bits/32bytes) | Implementación con CAN-FD, permite ampliar la longitud de las tramas enviadas |
+| Balance simplicidad/seguridad vs. alternativas evaluadas (ver sección 5) | Contador anti-replay, posible tras ampliar el limite de datos enviados por mensaje |
+| Bloquea reenvío de tramas capturadas, aún y cuando el MAC sea válido | Encriptación de punto a punto mediante hasheo con HMAC-SHA256 |
 | Gestión de claves | Claves simétricas preinstaladas + rotación periódica vía nodo central | Bajo costo computacional para ECUs con recursos limitados |
-| Política ante fallos | Modo de alerta tras fallos consecutivos | Evita degradación silenciosa del sistema |
+| Política ante fallos | Modo de alerta y rechazo tras fallos consecutivos | Evita degradación silenciosa del sistema |
 | Metodología de evaluación | Comparación baseline (sin protección) vs. CAN-Secure | Da evidencia cuantitativa real de la mejora, no solo cifras aisladas |
 
 ---
@@ -16,13 +17,13 @@
 ## 1. Arquitectura general
 
 ```
-┌─────────────┐        ┌─────────────┐        ┌─────────────┐
-│   ECU A      │        │   ECU B      │        │  Monitor/IDS │
-│ (nodo sim.)  │        │ (nodo sim.)  │        │  (anomalías) │
-│              │        │              │        │              │
-│ CAN-Secure   │        │ CAN-Secure   │        │ CAN-Secure   │
-│ Wrapper      │        │ Wrapper      │        │ Sniffer      │
-└──────┬───────┘        └──────┬───────┘        └──────┬───────┘
+┌──────────────┐        ┌──────────────┐         ┌──────────────┐
+│   ECU A      │        │   ECU B      │         │  Monitor/IDS │
+│ (nodo sim.)  │        │ (nodo sim.)  │         │  (anomalías) │
+│              │        │              │         │              │
+│ CAN-Secure   │        │ CAN-Secure   │         │ CAN-Secure   │
+│ Wrapper      │        │ Wrapper      │         │ Sniffer      │
+└──────┬───────┘        └──────┬───────┘         └──────┬───────┘
        │                       │                        │
        └───────────┬───────────┴────────────┬───────────┘
                     │       BUS CAN (vcan0)   │
@@ -30,6 +31,12 @@
 ```
 
 Cada nodo corre tres capas internas: aplicación (payload real), CAN-Secure (MAC, anti-replay, política de fallos) y transporte (`python-can` sobre SocketCAN).
+De acuerdo al estandar del modelo OSI, el protocolo CAN abarca las capas de datos y fisica, CAN-Secure se situa en el punto medio entre las capas de transporte y red.
+Con salida desde la ECU del vehiculo se espera la metadata emitida tras la capa de red, momento donde el sniffer se encarga de loggear la información y tras realizar
+la encriptación correspondiente y asignar las llaves de decriptación se otorga un ID unico a la operación y se envia a la siguiente capa.
+Con destino hacia la ECU, la capa de transporte entrega a CAN-Secure una trama, el sistema se encarga entonces de confirmar que se trate de una trama esperada dentro de los registros del sniffer,
+de ser el caso, se evaluan las llaves de decriptación, se entrega el paquete y se registra el estado de la operación, en caso de volver a recibirse pero haber sido marcada como completa CAN-Secure
+filtra estas tramas para evitar ataques replay.
 
 ### Estructura de módulos
 
@@ -60,14 +67,22 @@ can-secure/
 
 ## 2. Formato de trama: frame dividido
 
-Dado que CAN clásico limita a 8 bytes de datos y un HMAC-SHA256 completo son 32 bytes, se usa un **frame secundario** inmediatamente después del frame de datos:
+Dado que CAN clásico limita a 8 bytes de datos y un HMAC-SHA256 completo son 32 bytes, se emplea CAN-FD para ampliar las posibilidades de longitud de trama:
 
-| Frame | ID | Contenido (8 bytes) |
+| Frame | ID | Contenido (64 bytes) |
 |---|---|---|
-| Frame 1 (datos) | `ID_base` | Payload real (hasta 8 bytes, o menos si se reserva espacio para el contador) |
-| Frame 2 (autenticación) | `ID_base + 1` | MAC truncado (4 bytes) + contador de secuencia (4 bytes) |
+| Frame 1 (datos) | `ID_base` | Payload real (hasta 8 bytes) |
+| Frame 2 (autenticación) | `ID_base + 1` | MAC encriptado (32 bytes) + contador de secuencia (4 bytes) |
 
+Ambos frames forman parte de una misma trama enviada de forma simultanea, recibida por el sistema y evaluada evitando los primeros 8 bytes correspondientes al mensaje o datos.
+Es una metodologia de trabajo arreglada, por lo que las tramas deben siempre seguir un estandar de formato, garantizando de igual manera que tramas no autorizadas con formatos diferentes sean automaticamente rechazadas.
+
+
+```
+(DEJO ESTO COMO COMENTARIO, REVISAR SI SIGUE APLICANDO PARA EL MODELO ACTUAL, DE LO CONTRARIO ELIMINAR.)
 El receptor reensambla ambos frames por `ID_base` antes de verificar. Esto **duplica el tráfico** para mensajes protegidos — es un costo aceptado y medible, no un detalle a ocultar: se reporta como KPI de overhead (sección 4).
+```
+
 
 ---
 
@@ -87,6 +102,7 @@ El receptor reensambla ambos frames por `ID_base` antes de verificar. Esto **dup
 - Nodo central rota claves periódicamente vía un frame de "actualización" autenticado con clave maestra.
 - **KPI nuevo — overhead computacional**: tiempo de CPU para calcular y verificar HMAC por mensaje, medido en el entorno de simulación (Python/SocketCAN). Se documenta explícitamente que esto **no es representativo de un microcontrolador embebido real** (ej. ARM Cortex-M), y se compara contra cifras de referencia de la literatura para dar contexto honesto sobre viabilidad en hardware real.
 - **KPI nuevo — overhead de tráfico**: % de incremento en número de frames por el esquema de frame dividido, contra el tráfico CAN sin protección.
+Nota: Implementación principalmente pensada en python, con posibilidades de traspasar a uso de APIs de C++ en caso de requerir optimización o que los tiempos de respuesta no den los resultados esperados en primera instancia.
 
 ---
 
@@ -144,6 +160,6 @@ En vez de reportar únicamente "% de detección de ataques" de forma aislada, se
 
 - Código fuente completo con README de instalación y ejecución.
 - Informe de resultados baseline vs. CAN-Secure (tablas + gráficas de los KPIs).
-- Diagrama de arquitectura (el de la sección 1) y diagrama de trama dividida (sección 2).
+- Diagrama de arquitectura (sección 1) y diagrama de trama dividida (sección 2).
 - Documentación técnica breve de la política de fallos y sus límites (sección 3).
 - Justificación comparativa de esquemas de autenticación (sección 5), para anexar a la sección "Propuesta de solución" del cuestionario original.
