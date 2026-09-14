@@ -71,18 +71,12 @@ Dado que CAN clásico limita a 8 bytes de datos y un HMAC-SHA256 completo son 32
 
 | Frame | ID | Contenido (64 bytes) |
 |---|---|---|
-| Frame 1 (datos) | `ID_base` | Payload real (hasta 8 bytes) |
+| Frame 1 (datos) | `ID_base` | Payload real (hasta 28 bytes) |
 | Frame 2 (autenticación) | `ID_base + 1` | MAC encriptado (32 bytes) + contador de secuencia (4 bytes) |
 
-Ambos frames forman parte de una misma trama enviada de forma simultanea, recibida por el sistema y evaluada evitando los primeros 8 bytes correspondientes al mensaje o datos.
+Ambos frames forman parte de una misma trama enviada de forma simultanea, recibida por el sistema y evaluada evitando los primeros bytes (1-28) correspondientes al mensaje o datos.
 Es una metodologia de trabajo arreglada, por lo que las tramas deben siempre seguir un estandar de formato, garantizando de igual manera que tramas no autorizadas con formatos diferentes sean automaticamente rechazadas.
-
-
-```
-(DEJO ESTO COMO COMENTARIO, REVISAR SI SIGUE APLICANDO PARA EL MODELO ACTUAL, DE LO CONTRARIO ELIMINAR.)
 El receptor reensambla ambos frames por `ID_base` antes de verificar. Esto **duplica el tráfico** para mensajes protegidos — es un costo aceptado y medible, no un detalle a ocultar: se reporta como KPI de overhead (sección 4).
-```
-
 
 ---
 
