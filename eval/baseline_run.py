@@ -12,7 +12,7 @@ def run_baseline():
     
     if msg:
         print(f"[Baseline Result] Trama aceptada directamente sin verificar: {msg.data}")
-        print("Detección de ataques: 0%")
+        print("Deteccion de ataques: 0%")
 
 if __name__ == "__main__":
     run_baseline()

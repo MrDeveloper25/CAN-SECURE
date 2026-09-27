@@ -9,7 +9,7 @@ class IDSMonitor:
         self.crypto = CryptoManager(secret_key)
         self.last_counters = {}
         
-        # Métricas de detección
+        # Metricas de deteccion
         self.metrics = {
             "total_frames": 0,
             "valid_frames": 0,
@@ -20,7 +20,7 @@ class IDSMonitor:
 
         # Control de frecuencia para DoS
         self.msg_timestamps = []
-        self.dos_threshold_per_sec = 50  # Alerta si hay más de 50 mensajes/segundo
+        self.dos_threshold_per_sec = 50  # Alerta si hay mas de 50 mensajes/segundo
 
     def _check_dos_flood(self):
         """Verifica si la tasa de mensajes por segundo supera el umbral de DoS."""

@@ -4,10 +4,10 @@ class FailurePolicy:
         self.max_failures = max_failures
 
     def register_failure(self, msg_id: int) -> bool:
-        """Registra un fallo. Devuelve True si se debe activar el modo de alerta/degradación."""
+        """Registra un fallo. Devuelve True si se debe activar el modo de alerta/degradacion."""
         self.failure_counts[msg_id] = self.failure_counts.get(msg_id, 0) + 1
         if self.failure_counts[msg_id] >= self.max_failures:
-            print(f"[POLÍTICA DE FALLOS] ¡Alerta! {self.max_failures} fallos consecutivos en ID: {hex(msg_id)}")
+            print(f"[POLITICA DE FALLOS] ¡Alerta! {self.max_failures} fallos consecutivos en ID: {hex(msg_id)}")
             return True
         return False
 

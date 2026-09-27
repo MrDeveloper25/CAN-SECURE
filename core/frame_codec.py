@@ -10,7 +10,7 @@ class FrameCodec:
     def unpack_auth_frame(auth_payload: bytes):
         """Desempaqueta el MAC y el contador desde el Frame 2."""
         if len(auth_payload) < 36:
-            raise ValueError("Payload de autenticación incompleto.")
+            raise ValueError("Payload de autenticacion incompleto.")
         
         mac = auth_payload[:32]
         seq_counter = struct.unpack(">I", auth_payload[32:36])[0]
