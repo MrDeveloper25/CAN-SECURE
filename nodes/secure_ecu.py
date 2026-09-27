@@ -21,7 +21,7 @@ class SecureECU:
         msg_data = can.Message(arbitration_id=base_id, data=data, is_fd=True)
         self.bus.send(msg_data)
         
-        # Frame 2: Autenticación
+        # Frame 2: Autenticacion
         auth_bytes = FrameCodec.pack_auth_frame(mac, self.seq_counter)
         msg_auth = can.Message(arbitration_id=base_id + 1, data=auth_bytes, is_fd=True)
         self.bus.send(msg_auth)

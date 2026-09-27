@@ -26,7 +26,7 @@ class IDSMonitor:
         """Verifica si la tasa de mensajes por segundo supera el umbral de DoS."""
         now = time.time()
         self.msg_timestamps.append(now)
-        # Mantener solo los marcas de tiempo del último segundo
+        # Mantener solo los marcas de tiempo del ultimo segundo
         self.msg_timestamps = [t for t in self.msg_timestamps if now - t <= 1.0]
 
         if len(self.msg_timestamps) > self.dos_threshold_per_sec:
@@ -46,10 +46,10 @@ class IDSMonitor:
             self.metrics["total_frames"] += 1
             self._check_dos_flood()
 
-            # Verificar si viene el par de Frame Dividido (Frame 2 de autenticación)
+            # Verificar si viene el par de Frame Dividido (Frame 2 de autenticacion)
             msg2 = self.bus.recv(timeout=0.1)
             if not msg2 or msg2.arbitration_id != msg1.arbitration_id + 1:
-                # Si no trae frame de autenticación, es una trama insegura / suplantada
+                # Si no trae frame de autenticacion, es una trama insegura / suplantada
                 self.metrics["spoofing_detected"] += 1
                 print(f"[ALERTA IDS] Trama sin autenticación detectada | ID: {hex(msg1.arbitration_id)}")
                 continue

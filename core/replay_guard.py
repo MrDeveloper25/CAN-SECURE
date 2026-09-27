@@ -1,6 +1,6 @@
 class ReplayGuard:
     def __init__(self):
-        # Mantiene el último contador válido por ID de mensaje
+        # Mantiene el ultimo contador valido por ID de mensaje
         self.last_counters = {}
 
     def is_valid_sequence(self, msg_id: int, seq_counter: int) -> bool:

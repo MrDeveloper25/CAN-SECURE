@@ -10,7 +10,7 @@ def run_replay_attack(channel='virtual_bus', interface='virtual', target_id=0x10
     payload_to_sign = data + old_seq.to_bytes(4, byteorder='big')
     mac = crypto.generate_mac(payload_to_sign)
     
-    # Reenvía una trama anterior con un contador de secuencia ya usado (old_seq)
+    # Reenvia una trama anterior con un contador de secuencia ya usado (old_seq)
     msg1 = can.Message(arbitration_id=target_id, data=data, is_fd=True)
     auth_bytes = FrameCodec.pack_auth_frame(mac, old_seq)
     msg2 = can.Message(arbitration_id=target_id + 1, data=auth_bytes, is_fd=True)

@@ -10,7 +10,7 @@ def run_secure_eval():
     ids = IDSMonitor()
     ecu = SecureECU()
     
-    # Enviar tráfico legítimo
+    # Enviar trafico legitimo
     ecu.send_secure_frame(0x100, b"ENGINE_RPM_3000")
     
     # Ejecutar ataques
