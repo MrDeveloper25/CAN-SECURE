@@ -1,10 +1,11 @@
 import can
 import time
-from core.crypto import CryptoManager
+from cryptography.exceptions import InvalidTag
+from core.crypto import CryptoManager, DEMO_KEY
 from core.frame_codec import FrameCodec
 
 class IDSMonitor:
-    def __init__(self, channel='virtual_bus', interface='virtual', secret_key=b'secret_key_ecu1'):
+    def __init__(self, channel='virtual_bus', interface='virtual', secret_key=DEMO_KEY):
         self.bus = can.interface.Bus(channel=channel, bustype=interface, fd=True)
         self.crypto = CryptoManager(secret_key)
         self.last_counters = {}
@@ -55,7 +56,7 @@ class IDSMonitor:
                 continue
 
             try:
-                mac, seq_counter = FrameCodec.unpack_auth_frame(msg2.data)
+                nonce, tag, seq_counter = FrameCodec.unpack_auth_frame(msg2.data)
             except Exception:
                 self.metrics["spoofing_detected"] += 1
                 print(f"[ALERTA IDS] Frame de autenticación malformado | ID: {hex(msg2.arbitration_id)}")
@@ -68,11 +69,13 @@ class IDSMonitor:
                 print(f"[ALERTA IDS] ¡Replay Detectado! ID: {hex(msg1.arbitration_id)} | Seq recibida: {seq_counter} <= Última válida: {last_seq}")
                 continue
 
-            # 2. Verificación de Autenticidad (HMAC)
-            payload_to_sign = msg1.data + seq_counter.to_bytes(4, byteorder='big')
-            if not self.crypto.verify_mac(payload_to_sign, mac):
+            # 2. Autenticacion y descifrado AES-GCM
+            associated_data = FrameCodec.associated_data(msg1.arbitration_id, seq_counter)
+            try:
+                self.crypto.decrypt(msg1.data, nonce, tag, associated_data)
+            except InvalidTag:
                 self.metrics["spoofing_detected"] += 1
-                print(f"[ALERTA IDS] ¡Spoofing/Firma Inválida Detectada! ID: {hex(msg1.arbitration_id)}")
+                print(f"[ALERTA IDS] ¡Spoofing/Tag AES-GCM inválido! ID: {hex(msg1.arbitration_id)}")
                 continue
 
             # Si pasa todas las validaciones

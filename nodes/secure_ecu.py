@@ -1,11 +1,12 @@
 import can
-from core.crypto import CryptoManager
+from cryptography.exceptions import InvalidTag
+from core.crypto import CryptoManager, DEMO_KEY
 from core.frame_codec import FrameCodec
 from core.replay_guard import ReplayGuard
 from core.failure_policy import FailurePolicy
 
 class SecureECU:
-    def __init__(self, channel='virtual_bus', interface='virtual', secret_key=b'secret_key_ecu1'):
+    def __init__(self, channel='virtual_bus', interface='virtual', secret_key=DEMO_KEY):
         self.bus = can.interface.Bus(channel=channel, bustype=interface, fd=True)
         self.crypto = CryptoManager(secret_key)
         self.replay_guard = ReplayGuard()
@@ -13,16 +14,18 @@ class SecureECU:
         self.seq_counter = 0
 
     def send_secure_frame(self, base_id: int, data: bytes):
+        if self.seq_counter >= 0xFFFFFFFF:
+            raise OverflowError("El contador de secuencia AES-GCM se ha agotado.")
         self.seq_counter += 1
-        payload_to_sign = data + self.seq_counter.to_bytes(4, byteorder='big')
-        mac = self.crypto.generate_mac(payload_to_sign)
+        associated_data = FrameCodec.associated_data(base_id, self.seq_counter)
+        nonce, ciphertext, tag = self.crypto.encrypt(data, associated_data)
         
-        # Frame 1: Datos
-        msg_data = can.Message(arbitration_id=base_id, data=data, is_fd=True)
+        # Frame 1: payload cifrado
+        msg_data = can.Message(arbitration_id=base_id, data=ciphertext, is_fd=True)
         self.bus.send(msg_data)
         
-        # Frame 2: Autenticacion
-        auth_bytes = FrameCodec.pack_auth_frame(mac, self.seq_counter)
+        # Frame 2: nonce, tag de autenticacion y contador
+        auth_bytes = FrameCodec.pack_auth_frame(nonce, tag, self.seq_counter)
         msg_auth = can.Message(arbitration_id=base_id + 1, data=auth_bytes, is_fd=True)
         self.bus.send(msg_auth)
         
@@ -39,7 +42,7 @@ class SecureECU:
             return None
 
         try:
-            mac, seq_counter = FrameCodec.unpack_auth_frame(msg2.data)
+            nonce, tag, seq_counter = FrameCodec.unpack_auth_frame(msg2.data)
         except Exception:
             self.failure_policy.register_failure(msg1.arbitration_id)
             return None
@@ -48,10 +51,13 @@ class SecureECU:
             self.failure_policy.register_failure(msg1.arbitration_id)
             return None
 
-        payload_to_sign = msg1.data + seq_counter.to_bytes(4, byteorder='big')
-        if not self.crypto.verify_mac(payload_to_sign, mac):
+        associated_data = FrameCodec.associated_data(msg1.arbitration_id, seq_counter)
+        try:
+            plaintext = self.crypto.decrypt(msg1.data, nonce, tag, associated_data)
+        except InvalidTag:
             self.failure_policy.register_failure(msg1.arbitration_id)
             return None
 
+        self.replay_guard.accept_sequence(msg1.arbitration_id, seq_counter)
         self.failure_policy.reset_failures(msg1.arbitration_id)
-        return msg1.data
+        return plaintext
