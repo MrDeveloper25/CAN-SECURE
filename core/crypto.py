@@ -9,6 +9,16 @@ class CryptoManager:
     def __init__(self, secret_key: bytes):
         self._cipher = AESGCM(secret_key)
 
+    def update_key(self, secret_key: bytes):
+        """Actualiza la clave utilizada por AES-GCM."""
+        if not isinstance(secret_key, bytes):
+            raise TypeError("La clave debe ser de tipo bytes.")
+
+        if len(secret_key) not in (16, 24, 32):
+            raise ValueError("La clave AES debe tener 16, 24 o 32 bytes.")
+
+        self._cipher = AESGCM(secret_key)
+
     def encrypt(self, plaintext: bytes, associated_data: bytes) -> tuple[bytes, bytes, bytes]:
         """Cifra con AES-GCM y devuelve nonce, ciphertext y tag por separado."""
         nonce = os.urandom(AES_GCM_NONCE_SIZE)
