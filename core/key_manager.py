@@ -1,5 +1,7 @@
+from core.crypto import DEMO_KEY
+
 class KeyManager:
-    def __init__(self, initial_key: bytes = b'secret_key_ecu1'):
+    def __init__(self, initial_key: bytes = DEMO_KEY):
         self.current_key = initial_key
 
     def get_key(self) -> bytes:
