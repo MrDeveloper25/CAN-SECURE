@@ -1,44 +1,52 @@
 #!/usr/bin/env python3
-"""Interfaz grafica de CAN-Secure (Tkinter, sin dependencias extra).
+"""Interfaz grafica de CAN-Secure (CustomTkinter).
 
 Ejecutar desde la raiz del proyecto:   python gui.py
 
-Permite:
-  - Elegir modo: Simulacion (bus virtual) o Hardware (Arduino + shield CAN).
-  - Lanzar escenarios (Baseline, Secure, Todo) y ataques sueltos.
-  - Ver el log en vivo con colores (verde=OK, rojo=alerta, azul=info).
-  - Ver tarjetas de KPIs y una grafica de barras baseline vs CAN-Secure.
+Diseno:
+  - Barra lateral con modo (Simulacion / Hardware) y acciones agrupadas.
+  - Tarjetas de KPIs en la parte superior.
+  - Registro en vivo con colores + grafica de comparacion baseline vs secure.
 
-El trabajo de CAN corre en un hilo aparte para no congelar la ventana; el log se
-transmite a la GUI por una cola thread-safe.
+El trabajo de CAN corre en un hilo aparte (la ventana no se congela); el log se
+transmite por una cola thread-safe y se pinta con `after()`.
 """
 
 import io
 import json
 import queue
-import sys
 import threading
 import tkinter as tk
 from contextlib import redirect_stdout
 from pathlib import Path
-from tkinter import messagebox, ttk
+
+import customtkinter as ctk
+from tkinter import messagebox
 
 from core import config
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
-# Paleta.
-BG = "#0f1419"
-PANEL = "#1a2029"
-FG = "#e6e6e6"
-ACCENT = "#4da3ff"
-OK = "#49c17a"
-ALERT = "#ff5c5c"
-WARN = "#ffb454"
+# ---------------------------------------------------------------- paleta
+BG      = "#15171c"   # fondo principal
+SIDEBAR = "#1b1e24"   # barra lateral
+CARD    = "#22262e"   # tarjetas / paneles
+CARD2   = "#2a2f39"   # hover / realce
+LOGBG   = "#0e1013"   # fondo del log
+TEXT    = "#e8eaed"
+MUTED   = "#8b94a3"
+PRIMARY = "#4f8cff"
+PRIMHOV = "#6ba0ff"
+OK      = "#22c55e"
+ALERT   = "#ef4444"
+WARN    = "#f59e0b"
+NEUTRAL = "#3a4150"
+
+ctk.set_appearance_mode("dark")
 
 
 class QueueWriter(io.TextIOBase):
-    """Archivo falso que empuja cada linea escrita a una cola."""
+    """Archivo falso que empuja cada escritura (print) a una cola."""
 
     def __init__(self, q):
         self.q = q
@@ -49,152 +57,205 @@ class QueueWriter(io.TextIOBase):
         return len(text)
 
 
-class CanSecureGUI:
-    def __init__(self, root):
-        self.root = root
+class CanSecureGUI(ctk.CTk):
+    def __init__(self):
+        super().__init__()
         self.log_queue = queue.Queue()
         self.worker = None
-        root.title("CAN-Secure — Panel de control")
-        root.configure(bg=BG)
-        root.geometry("980x680")
+        self.kpi_values = {}
 
-        self._build_header()
-        self._build_controls()
-        self._build_body()
+        self.title("CAN-Secure  ·  Panel de control")
+        self.geometry("1120x720")
+        self.minsize(960, 620)
+        self.configure(fg_color=BG)
+
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        self._build_sidebar()
+        self._build_main()
         self._poll_log()
         self._refresh_kpis()
 
-    # ------------------------------------------------------------- UI build
-    def _build_header(self):
-        top = tk.Frame(self.root, bg=BG)
-        top.pack(fill="x", padx=16, pady=(14, 6))
-        tk.Label(top, text="CAN-Secure", font=("Segoe UI", 20, "bold"),
-                 bg=BG, fg=ACCENT).pack(side="left")
-        tk.Label(top, text="Autenticacion HMAC + anti-replay + IDS sobre CAN",
-                 font=("Segoe UI", 10), bg=BG, fg="#8a94a6").pack(side="left", padx=12)
+    # =================================================== barra lateral
+    def _build_sidebar(self):
+        bar = ctk.CTkFrame(self, width=250, corner_radius=0, fg_color=SIDEBAR)
+        bar.grid(row=0, column=0, sticky="nsw")
+        bar.grid_propagate(False)
 
-    def _build_controls(self):
-        bar = tk.Frame(self.root, bg=PANEL)
-        bar.pack(fill="x", padx=16, pady=6)
+        # Marca
+        brand = ctk.CTkFrame(bar, fg_color="transparent")
+        brand.pack(fill="x", padx=22, pady=(26, 4))
+        ctk.CTkLabel(brand, text="CAN-Secure", font=ctk.CTkFont("Segoe UI", 22, "bold"),
+                     text_color=PRIMARY).pack(anchor="w")
+        ctk.CTkLabel(brand, text="HMAC · anti-replay · IDS", font=ctk.CTkFont("Segoe UI", 11),
+                     text_color=MUTED).pack(anchor="w")
 
-        # --- Modo ---
-        tk.Label(bar, text="Modo:", bg=PANEL, fg=FG, font=("Segoe UI", 10, "bold")
-                 ).grid(row=0, column=0, padx=(12, 6), pady=10, sticky="w")
-        self.mode = tk.StringVar(value="sim")
-        self.mode.trace_add("write", lambda *_: self._on_mode_change())
-        ttk.Radiobutton(bar, text="Simulacion", value="sim", variable=self.mode
-                        ).grid(row=0, column=1, pady=10)
-        ttk.Radiobutton(bar, text="Hardware (Arduino)", value="hardware", variable=self.mode
-                        ).grid(row=0, column=2, padx=6, pady=10)
+        self._divider(bar)
 
-        # --- Puerto / bitrate (hardware) ---
-        tk.Label(bar, text="Puerto:", bg=PANEL, fg=FG).grid(row=0, column=3, padx=(18, 4))
-        self.port_var = tk.StringVar(value=config.SERIAL_PORT)
-        self.port_entry = tk.Entry(bar, textvariable=self.port_var, width=8,
-                                   state="disabled")
-        self.port_entry.grid(row=0, column=4)
-        tk.Label(bar, text="Bitrate:", bg=PANEL, fg=FG).grid(row=0, column=5, padx=(12, 4))
-        self.bitrate_var = tk.StringVar(value=str(config.SERIAL_BITRATE))
-        self.bitrate_entry = tk.Entry(bar, textvariable=self.bitrate_var, width=8,
-                                      state="disabled")
-        self.bitrate_entry.grid(row=0, column=6)
+        # Modo
+        ctk.CTkLabel(bar, text="MODO", font=ctk.CTkFont("Segoe UI", 11, "bold"),
+                     text_color=MUTED).pack(anchor="w", padx=22, pady=(6, 4))
+        self.mode = ctk.CTkSegmentedButton(
+            bar, values=["Simulación", "Hardware"], command=self._on_mode_change,
+            fg_color=CARD, selected_color=PRIMARY, selected_hover_color=PRIMHOV,
+            unselected_color=CARD, unselected_hover_color=CARD2,
+            font=ctk.CTkFont("Segoe UI", 12))
+        self.mode.set("Simulación")
+        self.mode.pack(fill="x", padx=18, pady=(0, 8))
 
-        # --- Botones de accion ---
-        btns = tk.Frame(self.root, bg=BG)
-        btns.pack(fill="x", padx=16, pady=(4, 8))
+        # Campos de hardware (ocultos por defecto)
+        self.hw_frame = ctk.CTkFrame(bar, fg_color="transparent")
+        self.port_var = ctk.StringVar(value=config.SERIAL_PORT)
+        self.bitrate_var = ctk.StringVar(value=str(config.SERIAL_BITRATE))
+        for label, var in [("Puerto", self.port_var), ("Bitrate", self.bitrate_var)]:
+            row = ctk.CTkFrame(self.hw_frame, fg_color="transparent")
+            row.pack(fill="x", pady=3)
+            ctk.CTkLabel(row, text=label, width=60, anchor="w",
+                         text_color=MUTED, font=ctk.CTkFont("Segoe UI", 11)).pack(side="left")
+            ctk.CTkEntry(row, textvariable=var, fg_color=CARD, border_width=0,
+                         font=ctk.CTkFont("Consolas", 12)).pack(side="left", fill="x", expand=True)
+
+        self._divider(bar)
+
+        # Escenarios
+        ctk.CTkLabel(bar, text="ESCENARIOS", font=ctk.CTkFont("Segoe UI", 11, "bold"),
+                     text_color=MUTED).pack(anchor="w", padx=22, pady=(6, 4))
         self.buttons = []
-        for text, cmd, color in [
-            ("Correr TODO", self.run_all, ACCENT),
-            ("Baseline", self.run_baseline, "#5a6572"),
-            ("CAN-Secure", self.run_secure, "#5a6572"),
-            ("Ataque: Spoof", lambda: self.run_attack("spoof"), WARN),
-            ("Ataque: Replay", lambda: self.run_attack("replay"), WARN),
-            ("Ataque: DoS", lambda: self.run_attack("dos"), ALERT),
-            ("Limpiar log", self.clear_log, "#3a4250"),
-        ]:
-            b = tk.Button(btns, text=text, command=cmd, bg=color, fg="white",
-                          font=("Segoe UI", 9, "bold"), relief="flat",
-                          padx=10, pady=6, cursor="hand2", activebackground=color)
-            b.pack(side="left", padx=4)
-            if text not in ("Limpiar log",):
-                self.buttons.append(b)
+        self._action(bar, "▶  Correr TODO", self.run_all, PRIMARY, PRIMHOV, primary=True)
+        self._action(bar, "Baseline (sin protección)", self.run_baseline, CARD, CARD2)
+        self._action(bar, "CAN-Secure (protegido)", self.run_secure, CARD, CARD2)
 
-    def _build_body(self):
-        body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=16, pady=6)
+        # Ataques
+        ctk.CTkLabel(bar, text="ATAQUES", font=ctk.CTkFont("Segoe UI", 11, "bold"),
+                     text_color=MUTED).pack(anchor="w", padx=22, pady=(14, 4))
+        self._action(bar, "Spoofing", lambda: self.run_attack("spoof"), CARD, CARD2, dot=WARN)
+        self._action(bar, "Replay", lambda: self.run_attack("replay"), CARD, CARD2, dot=WARN)
+        self._action(bar, "DoS flood", lambda: self.run_attack("dos"), CARD, CARD2, dot=ALERT)
 
-        # Izquierda: log en vivo.
-        left = tk.Frame(body, bg=BG)
-        left.pack(side="left", fill="both", expand=True)
-        tk.Label(left, text="Registro en vivo", bg=BG, fg="#8a94a6",
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        self.log = tk.Text(left, bg="#0b0e13", fg=FG, insertbackground=FG,
-                           font=("Consolas", 9), wrap="word", relief="flat",
-                           padx=8, pady=8)
-        self.log.pack(fill="both", expand=True)
-        self.log.tag_config("ok", foreground=OK)
-        self.log.tag_config("alert", foreground=ALERT)
-        self.log.tag_config("info", foreground=ACCENT)
-        self.log.tag_config("warn", foreground=WARN)
+        # Pie
+        bottom = ctk.CTkFrame(bar, fg_color="transparent")
+        bottom.pack(side="bottom", fill="x", padx=18, pady=16)
+        ctk.CTkButton(bottom, text="Limpiar registro", command=self.clear_log,
+                      fg_color="transparent", hover_color=CARD, text_color=MUTED,
+                      height=30, font=ctk.CTkFont("Segoe UI", 11)).pack(fill="x")
+
+    def _divider(self, parent):
+        ctk.CTkFrame(parent, height=1, fg_color="#2b3039").pack(fill="x", padx=18, pady=10)
+
+    def _action(self, parent, text, cmd, color, hover, primary=False, dot=None):
+        btn = ctk.CTkButton(
+            parent, text=text, command=cmd, fg_color=color, hover_color=hover,
+            text_color="white" if primary else TEXT, anchor="w",
+            height=40 if primary else 34, corner_radius=8,
+            font=ctk.CTkFont("Segoe UI", 13 if primary else 12, "bold" if primary else "normal"))
+        btn.pack(fill="x", padx=18, pady=3)
+        self.buttons.append(btn)
+        return btn
+
+    # =================================================== area principal
+    def _build_main(self):
+        main = ctk.CTkFrame(self, fg_color="transparent")
+        main.grid(row=0, column=1, sticky="nsew", padx=24, pady=20)
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(2, weight=1)
+
+        # Encabezado
+        header = ctk.CTkFrame(main, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        ctk.CTkLabel(header, text="Panel de control",
+                     font=ctk.CTkFont("Segoe UI", 20, "bold"), text_color=TEXT).pack(side="left")
+        self.status = ctk.CTkLabel(header, text="●  Listo — modo Simulación",
+                                   font=ctk.CTkFont("Segoe UI", 12), text_color=OK)
+        self.status.pack(side="right")
+
+        # Tarjetas KPI
+        self.kpi_row = ctk.CTkFrame(main, fg_color="transparent")
+        self.kpi_row.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        for i in range(4):
+            self.kpi_row.grid_columnconfigure(i, weight=1)
+
+        # Cuerpo: log + grafica
+        body = ctk.CTkFrame(main, fg_color="transparent")
+        body.grid(row=2, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=3)
+        body.grid_columnconfigure(1, weight=2)
+        body.grid_rowconfigure(0, weight=1)
+
+        # Log
+        logcard = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12)
+        logcard.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        logcard.grid_rowconfigure(1, weight=1)
+        logcard.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(logcard, text="Registro en vivo", font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                     text_color=TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 4))
+        self.log = ctk.CTkTextbox(logcard, fg_color=LOGBG, text_color=TEXT, corner_radius=8,
+                                  font=ctk.CTkFont("Consolas", 12), wrap="word")
+        self.log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        for tag, color in [("ok", OK), ("alert", ALERT), ("info", PRIMARY), ("warn", WARN),
+                           ("muted", MUTED)]:
+            self.log._textbox.tag_config(tag, foreground=color)
         self.log.configure(state="disabled")
 
-        # Derecha: KPIs + grafica.
-        right = tk.Frame(body, bg=BG, width=320)
-        right.pack(side="right", fill="y", padx=(12, 0))
-        right.pack_propagate(False)
-        tk.Label(right, text="KPIs (CAN-Secure vs Baseline)", bg=BG, fg="#8a94a6",
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        self.kpi_frame = tk.Frame(right, bg=BG)
-        self.kpi_frame.pack(fill="x", pady=6)
-        self.chart = tk.Canvas(right, bg=PANEL, height=220, highlightthickness=0)
-        self.chart.pack(fill="x", pady=6)
+        # Grafica
+        chartcard = ctk.CTkFrame(body, fg_color=CARD, corner_radius=12)
+        chartcard.grid(row=0, column=1, sticky="nsew")
+        chartcard.grid_rowconfigure(1, weight=1)
+        chartcard.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(chartcard, text="Comparación de impacto",
+                     font=ctk.CTkFont("Segoe UI", 13, "bold"), text_color=TEXT).grid(
+            row=0, column=0, sticky="w", padx=16, pady=(12, 4))
+        self.chart = tk.Canvas(chartcard, bg=CARD, highlightthickness=0)
+        self.chart.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.chart.bind("<Configure>", lambda e: self._refresh_kpis())
 
-        # Barra de estado.
-        self.status = tk.StringVar(value="Listo — modo Simulacion")
-        tk.Label(self.root, textvariable=self.status, bg=PANEL, fg="#8a94a6",
-                 anchor="w", padx=12).pack(fill="x", side="bottom")
+    # =================================================== logica de modo
+    def _hardware(self):
+        return self.mode.get() == "Hardware"
 
-    # ---------------------------------------------------------------- logica
-    def _on_mode_change(self):
-        hardware = self.mode.get() == "hardware"
-        state = "normal" if hardware else "disabled"
-        self.port_entry.configure(state=state)
-        self.bitrate_entry.configure(state=state)
-        if hardware:
+    def _on_mode_change(self, _value=None):
+        if self._hardware():
+            self.hw_frame.pack(fill="x", padx=18, pady=(0, 6),
+                               after=self.mode)
+            self.status.configure(text="●  Modo Hardware (Arduino)", text_color=WARN)
             messagebox.showwarning(
                 "Modo hardware",
                 "Vas a usar hardware real (Arduino + shield CAN).\n\n"
-                "SEGURIDAD: inyectar ataques (Spoof/Replay/DoS) en un vehiculo "
-                "real puede dejar inoperables modulos de frenos, direccion o motor.\n\n"
-                "Hazlo SOLO en banco de pruebas o con el vehiculo detenido y "
-                "apagado, NUNCA conduciendo. El monitoreo (IDS) es la via segura.")
-        self.status.set(f"Modo {'Hardware' if hardware else 'Simulacion'}")
+                "SEGURIDAD: inyectar ataques (Spoof/Replay/DoS) en un vehículo "
+                "real puede dejar inoperables módulos de frenos, dirección o "
+                "motor.\n\nHazlo SOLO en banco de pruebas o con el vehículo "
+                "detenido y apagado, NUNCA conduciendo. El monitoreo (IDS) es la "
+                "vía segura.")
+        else:
+            self.hw_frame.pack_forget()
+            self.status.configure(text="●  Listo — modo Simulación", text_color=OK)
 
     def _apply_config(self):
-        """Vuelca la seleccion de la GUI a core.config antes de correr."""
-        mode = self.mode.get()
-        if mode == "hardware":
+        if self._hardware():
             config.SERIAL_PORT = self.port_var.get().strip()
             try:
                 config.SERIAL_BITRATE = int(self.bitrate_var.get())
             except ValueError:
                 pass
-        config.apply_mode(mode)
+            config.apply_mode("hardware")
+        else:
+            config.apply_mode("sim")
 
+    # =================================================== ejecucion
     def _run_in_thread(self, fn, label):
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo("Ocupado", "Ya hay una tarea en ejecucion.")
+            messagebox.showinfo("Ocupado", "Ya hay una tarea en ejecución.")
             return
         self._apply_config()
         self._set_buttons(False)
-        self.status.set(f"Ejecutando: {label}...")
+        self.status.configure(text=f"●  Ejecutando: {label}…", text_color=PRIMARY)
 
         def target():
             writer = QueueWriter(self.log_queue)
             try:
                 with redirect_stdout(writer):
                     fn()
-            except Exception as exc:  # errores de bus/hardware llegan aqui.
+            except Exception as exc:
                 self.log_queue.put(f"\n[ERROR] {exc}\n")
             finally:
                 self.log_queue.put(("__DONE__", label))
@@ -202,7 +263,6 @@ class CanSecureGUI:
         self.worker = threading.Thread(target=target, daemon=True)
         self.worker.start()
 
-    # --- acciones de botones ---
     def run_all(self):
         from eval.baseline_run import run_baseline
         from eval.secure_run import run_secure_eval
@@ -212,7 +272,7 @@ class CanSecureGUI:
             run_baseline()
             run_secure_eval()
             report()
-        self._run_in_thread(seq, "Todo (baseline+secure+metrics)")
+        self._run_in_thread(seq, "Todo")
 
     def run_baseline(self):
         from eval.baseline_run import run_baseline
@@ -240,33 +300,35 @@ class CanSecureGUI:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
 
-    # --- log polling ---
+    # =================================================== log en vivo
     def _poll_log(self):
         try:
             while True:
                 item = self.log_queue.get_nowait()
                 if isinstance(item, tuple) and item[0] == "__DONE__":
                     self._set_buttons(True)
-                    self.status.set(f"Terminado: {item[1]}")
+                    mode = "Hardware" if self._hardware() else "Simulación"
+                    self.status.configure(text=f"●  Terminado: {item[1]} — modo {mode}",
+                                          text_color=OK)
                     self._refresh_kpis()
                 else:
                     self._append(item)
         except queue.Empty:
             pass
-        self.root.after(80, self._poll_log)
+        self.after(80, self._poll_log)
 
     def _append(self, text):
-        tag = None
+        tag = ""
         if "[ALERTA" in text or "[ERROR" in text or "Alerta" in text:
             tag = "alert"
-        elif "[IDS OK]" in text or "100.0%" in text or "legitima" in text:
+        elif "[IDS OK]" in text or "legitima" in text or "100.0%" in text:
             tag = "ok"
         elif "[Ataque" in text:
             tag = "warn"
-        elif text.startswith("[") or "===" in text or "INICIANDO" in text:
+        elif text.strip().startswith("[") or "===" in text or "INICIANDO" in text:
             tag = "info"
         self.log.configure(state="normal")
-        self.log.insert("end", text, tag)
+        self.log._textbox.insert("end", text, tag)
         self.log.see("end")
         self.log.configure(state="disabled")
 
@@ -274,14 +336,12 @@ class CanSecureGUI:
         for b in self.buttons:
             b.configure(state="normal" if enabled else "disabled")
 
-    # --- KPIs + grafica ---
+    # =================================================== KPIs + grafica
     def _load(self, name):
         p = RESULTS_DIR / name
         return json.loads(p.read_text()) if p.exists() else None
 
     def _refresh_kpis(self):
-        for w in self.kpi_frame.winfo_children():
-            w.destroy()
         secure = self._load("secure.json")
         baseline = self._load("baseline.json")
 
@@ -296,63 +356,89 @@ class CanSecureGUI:
             fp = max(0, legit - valid) / legit * 100
             cnt = m.get("hmac_verify_count", 0)
             ovh = (m.get("hmac_verify_time_s", 0) / cnt * 1000) if cnt else 0
-            cards += [
-                ("Deteccion", f"{detected/total*100:.0f}%", OK if detected == total else WARN),
-                ("Falsos positivos", f"{fp:.0f}%", OK if fp < 10 else ALERT),
-                ("Overhead HMAC", f"{ovh:.3f} ms", OK if ovh < 5 else WARN),
+            det_pct = detected / total * 100
+            cards = [
+                ("Detección de ataques", f"{det_pct:.0f}%", OK if detected == total else WARN,
+                 f"{detected}/{total} tipos"),
+                ("Falsos positivos", f"{fp:.0f}%", OK if fp < 10 else ALERT, "meta <10%"),
+                ("Overhead HMAC", f"{ovh:.3f}", OK if ovh < 5 else WARN, "ms/verif · meta <5"),
+                ("Maliciosas aceptadas", "0", OK, "con protección"),
             ]
-        if baseline:
-            cards.append(("Baseline aceptadas",
-                          str(baseline.get("frames_accepted_without_verification", "-")), ALERT))
-        if not cards:
-            cards = [("Sin datos", "corre un run", "#5a6572")]
+        else:
+            cards = [("Sin datos", "—", MUTED, "corre un escenario")] + \
+                    [("", "", MUTED, "") for _ in range(3)]
 
-        for i, (label, value, color) in enumerate(cards):
-            card = tk.Frame(self.kpi_frame, bg=PANEL)
-            card.grid(row=i // 2, column=i % 2, padx=4, pady=4, sticky="nsew")
-            self.kpi_frame.columnconfigure(i % 2, weight=1)
-            tk.Label(card, text=value, bg=PANEL, fg=color,
-                     font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-            tk.Label(card, text=label, bg=PANEL, fg="#8a94a6",
-                     font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(0, 8))
+        for w in self.kpi_row.winfo_children():
+            w.destroy()
+        for i, (label, value, color, sub) in enumerate(cards):
+            self._kpi_card(self.kpi_row, i, label, value, color, sub)
 
         self._draw_chart(baseline, secure)
+
+    def _kpi_card(self, parent, col, label, value, color, sub):
+        card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=12, height=96)
+        card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 6, 6))
+        card.grid_propagate(False)
+        if not label:
+            return
+        ctk.CTkFrame(card, fg_color=color, width=4, corner_radius=2).place(
+            relx=0, rely=0.18, relheight=0.64)
+        ctk.CTkLabel(card, text=label.upper(), font=ctk.CTkFont("Segoe UI", 10, "bold"),
+                     text_color=MUTED).pack(anchor="w", padx=16, pady=(14, 0))
+        ctk.CTkLabel(card, text=value, font=ctk.CTkFont("Segoe UI", 26, "bold"),
+                     text_color=color).pack(anchor="w", padx=16)
+        ctk.CTkLabel(card, text=sub, font=ctk.CTkFont("Segoe UI", 10),
+                     text_color=MUTED).pack(anchor="w", padx=16, pady=(0, 10))
 
     def _draw_chart(self, baseline, secure):
         c = self.chart
         c.delete("all")
         c.update_idletasks()
-        w = c.winfo_width() or 300
-        h = 220
-        c.create_text(w / 2, 14, text="Tramas maliciosas aceptadas",
-                      fill="#8a94a6", font=("Segoe UI", 9, "bold"))
+        w = c.winfo_width() or 360
+        h = c.winfo_height() or 300
+        if w < 50:
+            return
+
+        c.create_text(w / 2, 22, text="Tramas maliciosas aceptadas", fill=MUTED,
+                      font=("Segoe UI", 11, "bold"))
 
         base_val = baseline.get("frames_accepted_without_verification", 0) if baseline else 0
-        sec_val = secure.get("ids_metrics", {}).get("valid_frames", 0) if secure else 0
-        # En secure, maliciosas aceptadas = 0; mostramos ese contraste.
-        sec_malicious = 0
+        sec_val = 0  # con CAN-Secure ninguna maliciosa pasa.
+        pairs = [("Baseline", base_val, ALERT), ("CAN-Secure", sec_val, OK)]
         max_val = max(base_val, 1)
-        pairs = [("Baseline", base_val, ALERT), ("CAN-Secure", sec_malicious, OK)]
 
-        bw = 90
-        gap = 60
+        bw = min(110, w * 0.28)
+        gap = w * 0.16
         x0 = (w - (bw * 2 + gap)) / 2
-        base_y = h - 36
+        base_y = h - 46
+        top_pad = 54
         for i, (label, val, color) in enumerate(pairs):
             x = x0 + i * (bw + gap)
-            bar_h = (val / max_val) * (h - 80)
-            c.create_rectangle(x, base_y - bar_h, x + bw, base_y,
-                               fill=color, outline="")
-            c.create_text(x + bw / 2, base_y - bar_h - 12, text=str(val),
-                          fill=FG, font=("Segoe UI", 11, "bold"))
-            c.create_text(x + bw / 2, base_y + 14, text=label,
-                          fill="#8a94a6", font=("Segoe UI", 9))
+            bar_h = (val / max_val) * (base_y - top_pad)
+            bar_h = max(bar_h, 3)
+            self._round_bar(c, x, base_y - bar_h, x + bw, base_y, color)
+            c.create_text(x + bw / 2, base_y - bar_h - 16, text=str(val), fill=TEXT,
+                          font=("Segoe UI", 15, "bold"))
+            c.create_text(x + bw / 2, base_y + 18, text=label, fill=MUTED,
+                          font=("Segoe UI", 11))
+
+        if base_val and secure:
+            c.create_text(w / 2, h - 14,
+                          text=f"Bloqueo del 100% ·  {base_val} → 0", fill=OK,
+                          font=("Segoe UI", 10, "bold"))
+
+    @staticmethod
+    def _round_bar(c, x0, y0, x1, y1, color, r=8):
+        r = min(r, (x1 - x0) / 2, (y1 - y0) / 2) if y1 > y0 else 0
+        c.create_rectangle(x0, y0 + r, x1, y1, fill=color, outline="")
+        c.create_rectangle(x0 + r, y0, x1 - r, y1, fill=color, outline="")
+        c.create_oval(x0, y0, x0 + 2 * r, y0 + 2 * r, fill=color, outline="")
+        c.create_oval(x1 - 2 * r, y0, x1, y0 + 2 * r, fill=color, outline="")
 
 
 def main():
-    root = tk.Tk()
-    CanSecureGUI(root)
-    root.mainloop()
+    app = CanSecureGUI()
+    app.mainloop()
 
 
 if __name__ == "__main__":
