@@ -5,7 +5,7 @@
 | Decisión | Elección | Justificación breve |
 |---|---|---|
 | Formato de trama | **Frame dividido (Opción A)** sobre CAN clásico | Compatible con hardware existente, fiel al objetivo de no requerir rediseño |
-| Esquema de autenticación | HMAC-SHA256 completo (256bits/32bytes) | Implementación con CAN-FD, permite ampliar la longitud de las tramas enviadas |
+| Esquema de autenticación | HMAC-SHA256, longitud configurable (por defecto 32 bytes completos) | CAN-FD permite 64 bytes/trama, así que el MAC completo + contador cabe sin presión de ancho de banda; se puede truncar (8/16 bytes) para medir el trade-off seguridad/overhead como KPI |
 | Balance simplicidad/seguridad vs. alternativas evaluadas (ver sección 5) | Contador anti-replay, posible tras ampliar el limite de datos enviados por mensaje |
 | Bloquea reenvío de tramas capturadas, aún y cuando el MAC sea válido | Encriptación de punto a punto mediante hasheo con HMAC-SHA256 |
 | Gestión de claves | Claves simétricas preinstaladas + rotación periódica vía nodo central | Bajo costo computacional para ECUs con recursos limitados |
@@ -41,11 +41,15 @@ filtra estas tramas para evitar ataques replay.
 ### Estructura de módulos
 
 ```
-can-secure/
+CAN-SECURE/
+├── run.py                   # punto de entrada único (CLI): baseline | secure | metrics | all | attack | ids
+├── requirements.txt         # dependencias (python-can)
 ├── core/
-│   ├── crypto.py            # HMAC-SHA256 truncado, generación/verificación de MAC
+│   ├── config.py            # configuración central: bus, IDs, longitud de MAC, clave
+│   ├── crypto.py            # HMAC-SHA256 (longitud configurable), generación/verificación de MAC
 │   ├── key_manager.py       # claves simétricas por ECU, rotación
 │   ├── frame_codec.py       # empaqueta/desempaqueta payload + MAC (frame dividido)
+│   ├── reassembler.py       # empareja Frame 1 (datos) + Frame 2 (auth) por ID, tolerante a intercalado
 │   ├── replay_guard.py      # contador de secuencia / ventana anti-replay
 │   └── failure_policy.py    # política de respuesta ante fallos de verificación
 ├── nodes/
@@ -56,12 +60,23 @@ can-secure/
 │   ├── replay.py
 │   └── dos_flood.py
 ├── sim/
-│   └── setup_vcan.sh        # crea la interfaz virtual vcan0
-└── eval/
-    ├── baseline_run.py      # corre ataques SIN CAN-Secure (línea base)
-    ├── secure_run.py        # corre los mismos ataques CON CAN-Secure
-    └── metrics.py           # calcula KPIs y compara baseline vs. CAN-Secure
+│   └── setup_vcan.sh        # crea la interfaz virtual vcan0 (Linux/SocketCAN)
+├── eval/
+│   ├── scenario.py          # secuencia de tráfico/ataques compartida (comparación justa)
+│   ├── baseline_run.py      # corre ataques SIN CAN-Secure (línea base)
+│   ├── secure_run.py        # corre los mismos ataques CON CAN-Secure
+│   └── metrics.py           # calcula KPIs y compara baseline vs. CAN-Secure
+├── tests/
+│   └── test_core.py         # tests unitarios de crypto, codec, replay, política y reensamblador
+└── results/                 # salida JSON de KPIs (baseline.json, secure.json)
 ```
+
+> **Nota de ejecución (bus simulado):** los escenarios de `eval/` orquestan ECU, IDS y
+> atacantes en **un solo proceso** sobre el bus `virtual` de python-can (que comparte
+> tráfico entre instancias del mismo proceso), lo que funciona en Windows/Linux sin
+> privilegios. Para un despliegue **multi-proceso real** se cambia `BUS_INTERFACE` a
+> `socketcan` y `BUS_CHANNEL` a `vcan0` en `core/config.py` y se levanta la interfaz con
+> `sim/setup_vcan.sh` (Linux). El mismo código corre en ambos modos.
 
 ---
 
@@ -109,7 +124,7 @@ Antes de fijar HMAC-SHA256 truncado como solución, se comparan brevemente los e
 | **TESLA protocol** | Autenticación con retraso de clave, eficiente en broadcast | Requiere sincronización de tiempo estricta entre ECUs, mayor complejidad de implementación para un prototipo |
 | **CANAuth** | Diseñado específicamente para CAN, usa IDs adicionales | Requiere modificar el arbitraje de IDs, mayor intrusión en la red existente |
 | **MaCAN** | Estándar más robusto, gestión de claves centralizada | Mayor overhead de mensajes de negociación, más complejo de simular en el tiempo del proyecto modular |
-| **HMAC-SHA256 truncado (elegido)** | Simplicidad de implementación, bajo overhead de negociación, ampliamente entendido | Truncar a 64 bits reduce la resistencia criptográfica teórica frente al esquema completo — se acepta como trade-off documentado |
+| **HMAC-SHA256 (elegido)** | Simplicidad de implementación, bajo overhead de negociación, ampliamente entendido | Longitud de MAC configurable (`config.MAC_LENGTH`): por defecto 32 bytes completos porque CAN-FD lo permite; truncar a 8/16 bytes ahorra ancho de banda a costa de resistencia criptográfica — se expone como trade-off medible (KPI de overhead) |
 
 Esta comparación se agrega como párrafo breve en la sección "Propuesta de solución" del documento original, para demostrar investigación previa y no una elección arbitraria.
 
@@ -147,6 +162,20 @@ En vez de reportar únicamente "% de detección de ataques" de forma aislada, se
 6. Correr `eval/baseline_run.py` (sin protección) y guardar resultados.
 7. Correr `eval/secure_run.py` (con protección) contra los mismos ataques.
 8. Generar comparación final con `eval/metrics.py` para el informe al comité.
+
+### Cómo ejecutar (desde la raíz del proyecto)
+
+```bash
+pip install -r requirements.txt
+
+python run.py baseline     # escenario sin protección  -> results/baseline.json
+python run.py secure       # escenario con CAN-Secure   -> results/secure.json
+python run.py metrics      # compara ambos y muestra los KPIs
+python run.py all          # las tres fases anteriores en orden
+
+python run.py attack dos   # lanzar un ataque suelto (spoof|replay|dos)
+python -m unittest discover tests   # tests unitarios de la lógica central
+```
 
 ---
 

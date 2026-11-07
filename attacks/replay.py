@@ -1,23 +1,33 @@
 import can
+
+from core import config
 from core.crypto import CryptoManager
 from core.frame_codec import FrameCodec
 
-def run_replay_attack(channel='virtual_bus', interface='virtual', target_id=0x100, old_seq=1):
-    bus = can.interface.Bus(channel=channel, bustype=interface, fd=True)
-    crypto = CryptoManager(b'secret_key_ecu1')
-    
+
+def run_replay_attack(channel=config.BUS_CHANNEL, interface=config.BUS_INTERFACE,
+                      target_id=config.DATA_ID, old_seq=1,
+                      secret_key=config.DEFAULT_SECRET_KEY):
+    """Reenvia una trama anterior (datos + MAC validos) con un contador ya usado.
+
+    El MAC es criptograficamente valido: lo que delata el ataque es el contador
+    de secuencia repetido, que el ReplayGuard del receptor rechaza.
+    """
+    bus = can.Bus(channel=channel, interface=interface, fd=config.BUS_FD,
+                  receive_own_messages=False)
+    crypto = CryptoManager(secret_key)
+
     data = b"OLD_COMMAND_DATA"
-    payload_to_sign = data + old_seq.to_bytes(4, byteorder='big')
+    payload_to_sign = data + old_seq.to_bytes(config.SEQ_COUNTER_BYTES, "big")
     mac = crypto.generate_mac(payload_to_sign)
-    
-    # Reenvia una trama anterior con un contador de secuencia ya usado (old_seq)
-    msg1 = can.Message(arbitration_id=target_id, data=data, is_fd=True)
+
+    bus.send(can.Message(arbitration_id=target_id, data=data, is_fd=config.BUS_FD))
     auth_bytes = FrameCodec.pack_auth_frame(mac, old_seq)
-    msg2 = can.Message(arbitration_id=target_id + 1, data=auth_bytes, is_fd=True)
-    
-    bus.send(msg1)
-    bus.send(msg2)
+    bus.send(can.Message(arbitration_id=config.auth_id_for(target_id),
+                         data=auth_bytes, is_fd=config.BUS_FD))
     print(f"[Ataque Replay] Trama antigua reenviada con Seq: {old_seq}")
+    bus.shutdown()
+
 
 if __name__ == "__main__":
     run_replay_attack()

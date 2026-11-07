@@ -1,18 +1,19 @@
-Set-Content -Path .gitignore -Value @"
 # Entornos virtuales
 .venv/
 venv/
 env/
 
-# Archivos de caché de Python
+# Archivos de cache de Python
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Configuración de editores
+# Configuracion de editores
 .vscode/
 .idea/
 
 # Logs y temporales
 *.log
-"@
+
+# Resultados generados (se conserva la carpeta con .gitkeep)
+results/*.json
