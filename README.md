@@ -168,6 +168,8 @@ En vez de reportar únicamente "% de detección de ataques" de forma aislada, se
 ```bash
 pip install -r requirements.txt
 
+python gui.py              # INTERFAZ GRÁFICA (botones, log en vivo, KPIs, gráfica)
+
 python run.py baseline     # escenario sin protección  -> results/baseline.json
 python run.py secure       # escenario con CAN-Secure   -> results/secure.json
 python run.py metrics      # compara ambos y muestra los KPIs
@@ -176,6 +178,18 @@ python run.py all          # las tres fases anteriores en orden
 python run.py attack dos   # lanzar un ataque suelto (spoof|replay|dos)
 python -m unittest discover tests   # tests unitarios de la lógica central
 ```
+
+### Modos de ejecución
+
+| Modo | Interfaz CAN | Dónde | Notas |
+|---|---|---|---|
+| **Simulación** (por defecto) | `virtual` (CAN-FD) | Windows/Linux, un proceso | MAC completo 32 bytes. No requiere hardware |
+| **SocketCAN** | `vcan0` (CAN-FD) | Linux | Multi-proceso real; `sim/setup_vcan.sh` |
+| **Hardware** | `slcan` (CAN clásico) | Arduino + shield MCP2515 → vehículo | MAC truncado a 4 bytes. Ver **[HARDWARE.md](HARDWARE.md)** |
+
+El modo se elige desde la GUI (selector *Simulación / Hardware*) o con
+`config.apply_mode(...)`. ⚠️ Inyectar ataques en un vehículo real es peligroso:
+lee la sección de seguridad de [HARDWARE.md](HARDWARE.md) antes de conectar nada.
 
 ---
 

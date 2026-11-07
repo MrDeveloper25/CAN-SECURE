@@ -12,10 +12,8 @@ class IDSMonitor:
     """Sniffer que escucha el bus, reensambla el frame dividido y detecta
     spoofing (sin auth / MAC invalido), replay (contador reusado) y DoS (tasa)."""
 
-    def __init__(self, channel=config.BUS_CHANNEL, interface=config.BUS_INTERFACE,
-                 secret_key=config.DEFAULT_SECRET_KEY):
-        self.bus = can.Bus(channel=channel, interface=interface,
-                           fd=config.BUS_FD, receive_own_messages=False)
+    def __init__(self, secret_key=config.DEFAULT_SECRET_KEY):
+        self.bus = config.make_bus(receive_own_messages=False)
         self.crypto = CryptoManager(secret_key)
         self.reassembler = FrameReassembler()
         self.last_counters = {}

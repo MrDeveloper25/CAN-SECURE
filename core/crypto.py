@@ -12,7 +12,9 @@ class CryptoManager:
     trade-off seguridad/ancho de banda como KPI de overhead.
     """
 
-    def __init__(self, secret_key: bytes, mac_length: int = config.MAC_LENGTH):
+    def __init__(self, secret_key: bytes, mac_length: int | None = None):
+        if mac_length is None:
+            mac_length = config.MAC_LENGTH  # se lee en runtime (puede cambiar por modo).
         if not 1 <= mac_length <= 32:
             raise ValueError("mac_length debe estar entre 1 y 32 bytes.")
         self.secret_key = secret_key

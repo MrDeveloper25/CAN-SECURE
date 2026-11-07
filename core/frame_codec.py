@@ -15,13 +15,15 @@ class FrameCodec:
         return mac + struct.pack(">I", seq_counter)
 
     @staticmethod
-    def unpack_auth_frame(auth_payload: bytes, mac_length: int = config.MAC_LENGTH):
+    def unpack_auth_frame(auth_payload: bytes, mac_length: int | None = None):
         """Desempaqueta MAC y contador desde el Frame 2.
 
         Lanza ValueError si el payload no tiene el tamano esperado
         (mac_length + SEQ_COUNTER_BYTES), lo que de por si marca una trama
         malformada / no conforme al estandar.
         """
+        if mac_length is None:
+            mac_length = config.MAC_LENGTH
         expected = mac_length + config.SEQ_COUNTER_BYTES
         if len(auth_payload) < expected:
             raise ValueError(

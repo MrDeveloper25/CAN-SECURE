@@ -5,12 +5,10 @@ import can
 from core import config
 
 
-def run_dos_attack(channel=config.BUS_CHANNEL, interface=config.BUS_INTERFACE,
-                   count=100, delay=0.001):
+def run_dos_attack(count=100, delay=0.001):
     """Satura el bus con una rafaga de tramas basura para forzar denegacion de
     servicio. El IDS lo detecta por la tasa de mensajes/segundo."""
-    bus = can.Bus(channel=channel, interface=interface, fd=config.BUS_FD,
-                  receive_own_messages=False)
+    bus = config.make_bus(receive_own_messages=False)
     junk_data = b"\xFF" * 8
 
     print(f"[Ataque DoS] Inyectando rafaga de {count} mensajes...")

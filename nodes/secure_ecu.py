@@ -11,10 +11,8 @@ from core.failure_policy import FailurePolicy
 class SecureECU:
     """Nodo que envia y recibe tramas autenticadas con el esquema CAN-Secure."""
 
-    def __init__(self, channel=config.BUS_CHANNEL, interface=config.BUS_INTERFACE,
-                 secret_key=config.DEFAULT_SECRET_KEY):
-        self.bus = can.Bus(channel=channel, interface=interface,
-                           fd=config.BUS_FD, receive_own_messages=False)
+    def __init__(self, secret_key=config.DEFAULT_SECRET_KEY):
+        self.bus = config.make_bus(receive_own_messages=False)
         self.crypto = CryptoManager(secret_key)
         self.reassembler = FrameReassembler()
         self.replay_guard = ReplayGuard()
@@ -23,7 +21,10 @@ class SecureECU:
 
     # ------------------------------------------------------------------ envio
     def send_secure_frame(self, base_id: int, data: bytes):
-        """Envia un mensaje protegido como dos tramas CAN-FD (datos + auth)."""
+        """Envia un mensaje protegido como dos tramas (datos + auth)."""
+        # En CAN clasico (hardware) el payload no puede exceder 8 bytes.
+        if not config.BUS_FD:
+            data = data[:8]
         self.seq_counter += 1
         payload_to_sign = data + self.seq_counter.to_bytes(config.SEQ_COUNTER_BYTES, "big")
         mac = self.crypto.generate_mac(payload_to_sign)

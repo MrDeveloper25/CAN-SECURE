@@ -21,8 +21,7 @@ class LegacyECU:
     """ECU sin proteccion: acepta cualquier frame de datos sin validar."""
 
     def __init__(self):
-        self.bus = can.Bus(channel=config.BUS_CHANNEL, interface=config.BUS_INTERFACE,
-                           fd=config.BUS_FD, receive_own_messages=False)
+        self.bus = config.make_bus(receive_own_messages=False)
         self.accepted_frames = 0
 
     def listen(self, duration, stop_event):
@@ -43,8 +42,7 @@ class LegacyECU:
 def run_baseline(write=True):
     print("--- INICIANDO ESCENARIO BASELINE (SIN PROTECCION) ---")
     ecu = LegacyECU()
-    sender = can.Bus(channel=config.BUS_CHANNEL, interface=config.BUS_INTERFACE,
-                     fd=config.BUS_FD, receive_own_messages=False)
+    sender = config.make_bus(receive_own_messages=False)
     stop_event = threading.Event()
     box = {}
 
@@ -57,8 +55,8 @@ def run_baseline(write=True):
 
     # Trafico legitimo (sin firma, aqui es texto plano) + los mismos ataques.
     for i in range(scenario.LEGIT_FRAMES):
-        sender.send(can.Message(arbitration_id=config.DATA_ID,
-                                data=f"ENGINE_RPM_{3000 + i}".encode(), is_fd=config.BUS_FD))
+        data = f"RPM{3000 + i}".encode()[: 8 if not config.BUS_FD else 64]
+        sender.send(can.Message(arbitration_id=config.DATA_ID, data=data, is_fd=config.BUS_FD))
         time.sleep(0.02)
     scenario.run_attacks()
 
