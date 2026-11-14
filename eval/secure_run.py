@@ -5,7 +5,7 @@ import can
 from nodes.ids_monitor import IDSMonitor
 from nodes.secure_ecu import SecureECU
 from core.key_manager import KeyManager
-from core.crypto import CryptoManager, DEMO_KEY
+from core.crypto import DEMO_KEY
 from core.frame_codec import FrameCodec
 from attacks.spoofing import run_spoofing_attack
 from attacks.replay import run_replay_attack
@@ -31,21 +31,23 @@ def run_secure_eval():
 
         print("\n--- PREPARANDO TRAMA CON CLAVE ANTERIOR ---")
 
-        old_crypto = CryptoManager(DEMO_KEY)
+        old_key_manager = KeyManager(DEMO_KEY)
 
         old_seq = 3
         old_data = b"OLD_KEY_COMMAND"
         old_aad = FrameCodec.associated_data(0x100, old_seq)
 
-        old_nonce, old_ciphertext, old_tag = old_crypto.encrypt(
+        old_nonce, old_ciphertext, old_tag = old_key_manager.encrypt(
+            0x100,
             old_data,
-            old_aad
+            old_aad,
         )
 
         old_auth = FrameCodec.pack_auth_frame(
             old_nonce,
             old_tag,
-            old_seq
+            old_seq,
+            len(old_ciphertext),
         )
 
         print("\n--- ROTACION DE CLAVE AES-GCM ---")
@@ -74,14 +76,16 @@ def run_secure_eval():
         try:
             old_msg1 = can.Message(
                 arbitration_id=0x100,
-                data=old_ciphertext,
-                is_fd=True
+                data=FrameCodec.pack_data_frame(old_ciphertext, old_seq),
+                is_fd=True,
+                is_extended_id=False,
             )
 
             old_msg2 = can.Message(
                 arbitration_id=0x101,
                 data=old_auth,
-                is_fd=True
+                is_fd=True,
+                is_extended_id=False,
             )
 
             old_bus.send(old_msg1)
