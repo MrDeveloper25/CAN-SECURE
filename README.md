@@ -4,7 +4,7 @@
 
 | Decisión | Elección | Justificación breve |
 |---|---|---|
-| Formato de trama | **Frame dividido (Opción A)** sobre CAN-FD | Permite separar payload cifrado y metadatos de autenticación |
+| Formato de trama | **Frame dividido sobre CAN-FD | Permite separar payload cifrado y metadatos de autenticación |
 | Cifrado y autenticación | AES-256-GCM, nonce de 96 bits y tag de 128 bits | Proporciona confidencialidad e integridad/autenticidad en una operación |
 | Anti-replay | Contador monotónico por ID, actualizado solo después de autenticar | Un paquete repetido no se entrega a la aplicación |
 | Gestión de claves | Clave demo en modo manual; almacén local persistente disponible para pruebas | No sustituye a un HSM/secure element ni define provisión remota de producción |
@@ -77,11 +77,9 @@ El ID base y el contador se codifican como datos asociados (AAD): quedan autenti
 
 Se admiten IDs CAN estándar de 11 bits; cada mensaje reserva `(ID_base, ID_base + 1)` y cada ID base debe tener un único emisor, que mantenga un contador monotónico por clave. Los pares no pueden solaparse: las bases consecutivas no son válidas. Las ECUs y el IDS aceptan `base_ids` para validar una asignación explícita. La integración debe configurar la lista completa y reservar sus IDs frente a cualquier otro tráfico. El modo sin lista permite la demo flexible, pero no valida la asignación global del bus.
 
-**Compatibilidad:** este formato reemplaza el anterior, que no incluía tipo ni contador en el frame de datos. Emisor, receptor e IDS deben actualizarse juntos; frames antiguos no se interpretan como CAN-Secure. En modo manual el nonce es aleatorio; el almacén persistente usa prefijo y contador monotónico por clave. Un reinicio o restauración de respaldo que pueda revertir el estado requiere una clave nueva antes de volver a cifrar.
-
 El modo manual conserva contadores solo en memoria. Para una prueba con reinicios se puede usar el almacén persistente descrito en la sección 4 y asignar un archivo anti-replay por receptor.
 
-Cada mensaje protegido ocupa dos frames, frente a uno para un mensaje CAN-FD sin protección; el overhead real en bytes y tiempo de bus depende también del tamaño del payload y se debe medir en la evaluación.
+Cada mensaje protegido necesita dos frames, frente a uno para un mensaje CAN-FD sin protección; el overhead real en bytes y tiempo de bus depende también del tamaño del payload y se debe medir en la evaluación.
 
 ---
 
@@ -94,30 +92,15 @@ Cada mensaje protegido ocupa dos frames, frente a uno para un mensaje CAN-FD sin
 
 ## 4. Gestión de claves y KPI de overhead computacional
 
-- El modo manual usa `DEMO_KEY` en memoria y solo sirve para reproducir escenarios; **no es una clave de producción**. `KeyManager.persistent(path)` crea una clave AES-256 aleatoria si el archivo no existe, o carga la clave almacenada. El archivo se crea con permisos `0600` y el directorio privado sin acceso de grupo/otros (por defecto `0700`); se rechazan permisos de grupo/otros, enlaces simbólicos y archivos de estado inválidos.
+- El modo manual usa `DEMO_KEY` en memoria y solo sirve para reproducir escenarios. `KeyManager.persistent(path)` crea una clave AES-256 aleatoria si el archivo no existe, o carga la clave almacenada. El archivo se crea con permisos `0600` y el directorio privado sin acceso de grupo/otros (por defecto `0700`); se rechazan permisos de grupo/otros, enlaces simbólicos y archivos de estado inválidos.
 - Se deriva con HKDF-SHA256 una clave AES-256 distinta por `ID_base` (grupo de mensajes). Emisor, receptor e IDS deben compartir la misma clave raíz y versión de derivación para ese grupo; un ID base distinto produce otra clave. Esto separa los grupos dentro del prototipo, pero no sustituye secretos independientes y protegidos por ECU en producción.
-- El almacén mantiene la clave raíz activa, el historial de huellas de claves usadas, un prefijo de nonce y su contador de 64 bits, además de contadores de envío por `ID_base`. Cada nonce se forma con un prefijo aleatorio de 32 bits y un contador persistente de 64 bits; el contador se guarda atómicamente y se sincroniza a disco **antes** de cifrar. Un error posterior consume el nonce, pero no lo reutiliza. Los contadores de envío también se guardan antes de transmitir, por lo que un reinicio puede saltar números, pero no reiniciarlos.
+- El almacén mantiene la clave raíz activa, el historial de huellas de claves usadas, un prefijo de nonce y su contador de 64 bits, además de contadores de envío por `ID_base`. Cada nonce se forma con un prefijo aleatorio de 32 bits y un contador persistente de 64 bits; el contador se guarda atómicamente y se sincroniza a disco antes de cifrar. Un error posterior consume el nonce, pero no lo reutiliza. Los contadores de envío también se guardan antes de transmitir, por lo que un reinicio puede saltar números, pero no reiniciarlos.
 - En las pruebas virtuales, todos los emisores que comparten la misma clave raíz deben usar el mismo almacén persistente para serializar la asignación de nonces y contadores. El archivo anti-replay se configura por receptor mediante `replay_state_path`; no se debe compartir entre ECU e IDS porque sus historiales de recepción son independientes. Ambos tipos de archivo deben vivir en directorios privados y conservarse junto con su clave.
-- Ejemplo de configuración para procesos de laboratorio:
-
-  ```python
-  from core.key_manager import KeyManager
-  from nodes.secure_ecu import SecureECU
-
-  keys = KeyManager.persistent("/ruta/privada/can-secure/keys.json")
-  ecu = SecureECU(
-      key_manager=keys,
-      base_ids=(0x100,),
-      replay_state_path="/ruta/privada/can-secure/ecu-a-replay.json",
-  )
-  ```
-
 - `rotate_key(new_key)` guarda la nueva clave de forma atómica, crea un prefijo de nonce nuevo y conserva los contadores de envío; si no se proporciona clave, genera una aleatoria de 256 bits. Rechaza la reutilización de una clave usada anteriormente. Los otros procesos recargan la clave antes de cifrar/verificar. La rotación es inmediata: mensajes en vuelo cifrados con la clave previa fallan; no existe periodo de gracia ni actualización autenticada por CAN.
 - El almacén de prueba guarda la clave raíz en claro, protegida solo por permisos locales; no es una bóveda. No protege frente a acceso privilegiado, restauración de una copia antigua del estado, robo de archivos ni pérdida de disco. En producción se requiere provisión autenticada, secretos independientes por ECU o grupo, almacenamiento protegido (HSM/secure element), recuperación coordinada y protección anti-rollback. Si se restaura una copia anterior del estado, no se debe volver a cifrar con esa clave: hay que provisionar una clave nueva mediante un proceso seguro.
 - El almacén usa primitivas de Linux (`fcntl`) y está destinado a pruebas locales; no implementa sincronización distribuida entre ECUs físicas. No se debe copiar un almacén independiente a varios emisores que compartan la misma clave: sus prefijos aleatorios no constituyen una garantía global de unicidad. En el prototipo virtual, compartir un único archivo y su bloqueo serializa las reservas.
-- **KPI — overhead computacional**: tiempo de CPU para cifrar y autenticar, y para verificar/descifrar con AES-GCM, medido en el entorno de simulación. Esto **no es representativo de un microcontrolador embebido real** (ej. ARM Cortex-M); se debe comparar con mediciones en el hardware objetivo.
+- **KPI — overhead computacional**: tiempo de CPU para cifrar y autenticar, y para verificar/descifrar con AES-GCM, medido en el entorno de simulación. Esto no es representativo de un microcontrolador embebido real; se debe comparar con mediciones en el hardware objetivo.
 - **KPI nuevo — overhead de tráfico**: % de incremento en número de frames por el esquema de frame dividido, contra el tráfico CAN sin protección.
-Nota: Implementación principalmente pensada en python, con posibilidades de traspasar a uso de APIs de C++ en caso de requerir optimización o que los tiempos de respuesta no den los resultados esperados en primera instancia.
 
 ---
 
@@ -174,7 +157,7 @@ python3 -m eval.comparison --runs 3 --dos-count 100 --output /tmp/can-secure-res
 
 ## 7. Pruebas manuales de desarrollo
 
-`eval/manual_test.py` es el módulo de pruebas de integración manual y regresión de componentes. **No sustituye** la comparación baseline/protegida de `eval/comparison.py`.
+`eval/manual_test.py` es el módulo de pruebas de integración manual y regresión de componentes. No sustituye la comparación baseline/protegida de `eval/comparison.py`.
 
 Se incluye `eval/manual_test.py` como una interfaz de terminal para probar el flujo actual sin hardware ni configurar `vcan0`. Todos los escenarios usan canales virtuales efímeros de `python-can`; no se conectan a interfaces SocketCAN.
 
@@ -209,65 +192,3 @@ python3 -m eval.manual_test --all
 ```
 
 Esta utilidad es solo para desarrollo: usa la clave pública de demostración del repositorio y no mide rendimiento de hardware ni valida una integración vehicular. No usar esa clave ni estos resultados como evidencia de seguridad de producción.
-
----
-
-## 8. Flujo de trabajo de implementación sugerido
-
-1. Montar `vcan0` con `setup_vcan.sh`; confirmar comunicación básica entre dos procesos `python-can`.
-2. Implementado: validar `frame_codec.py` + `crypto.py`, incluyendo tipo/contador en ambos frames, límite de payload y reensamblaje por ID/contador con tráfico intercalado.
-3. Implementado: validar anti-replay, pares incompletos/duplicados y que un tag inválido no actualiza el contador.
-4. Implementado para laboratorio: almacén persistente local, derivación de claves por ID, nonce/contador de envío monotónicos, estado anti-replay por receptor y rotación local con rechazo de claves reutilizadas.
-5. Revisar la respuesta local de `failure_policy.py`; no hay una acción de seguridad vehicular ni una alerta autenticada entre ECU e IDS.
-6. Ejecutar `python3 -m eval.manual_test --all` para las pruebas de componentes/protocolo.
-7. Ejecutar `python3 -m eval.comparison --runs 3 --dos-count 100 --output /tmp/can-secure-results.json` para la comparación repetible.
-8. Revisar el resumen de terminal y, si se guardó, el JSON con resultados individuales; no presentar latencias virtuales como mediciones de hardware.
-
----
-
-## 9. Documento y entregables recomendados para el comité
-
-- Código fuente completo con README de instalación y ejecución.
-- Informe de resultados baseline vs. CAN-Secure (tablas + gráficas de los KPIs).
-- Diagrama de arquitectura (sección 1) y diagrama de trama dividida (sección 2).
-- Documentación técnica breve de la política de fallos y sus límites (sección 3).
-- Justificación comparativa de esquemas de autenticación (sección 5), para anexar a la sección "Propuesta de solución" del cuestionario original.
-
----
-
-## 10. Guía de conceptos y flujo completo
-
-### Conceptos necesarios
-
-- **Bus CAN y CAN-FD:** medio compartido y de difusión. CAN-FD permite hasta 64 bytes de datos en cada frame; no cifra ni autentica por sí mismo los mensajes. Esta demo usa frames CAN-FD estándar de 11 bits.
-- **ID CAN / ID base:** identifica y prioriza un frame, no demuestra quién lo envió. CAN-Secure reserva el ID base para datos y `ID_base + 1` para autenticación; las parejas no pueden solaparse.
-- **ECU y payload:** la ECU es el nodo emisor/receptor simulado. El payload son los bytes de aplicación (por ejemplo, un valor de sensor), antes del cifrado.
-- **Bus virtual:** transporte aislado de `python-can` usado por las pruebas. No es `vcan0`, una interfaz física, ni una simulación del tiempo real/arbitraje del vehículo.
-- **Cifrado autenticado (AEAD):** AES-GCM cifra el payload y a la vez permite verificar que no fue modificado y que procede de alguien que conoce la clave. En este protocolo, el **nonce** debe ser único por clave; el **tag** de 16 bytes es la evidencia de integridad/autenticidad.
-- **Datos asociados (AAD):** el ID base y el contador se autentican junto al ciphertext, sin cifrarse. Si se altera cualquiera, falla la verificación GCM.
-- **Contador y anti-replay:** el emisor incrementa una secuencia de 32 bits por ID base. El receptor rechaza contadores repetidos o antiguos. El contador solo se guarda como aceptado después de autenticar correctamente el mensaje.
-- **Trama dividida y reensamblaje:** cada mensaje protegido se transmite en dos frames: datos (`0xC1`, contador, ciphertext) y autenticación (`0xC2`, contador, longitud, nonce y tag). `frame_codec.py` codifica y verifica sus longitudes/padding; `frame_reassembler.py` los empareja por `(ID_base, contador)`, incluso intercalados o fuera de orden, y elimina pares incompletos por timeout.
-- **DLC y padding:** CAN-FD solo admite tamaños de datos específicos. Los frames se rellenan con ceros hasta un tamaño permitido; la longitud declarada indica qué bytes son ciphertext. El máximo de payload de esta versión es 59 bytes.
-- **Gestión de claves:** `KeyManager` mantiene una clave raíz y deriva claves AES por ID base con HKDF-SHA256. En modo de laboratorio puede persistir la clave, los contadores y el estado de nonce en un archivo privado. El estado anti-replay del receptor se guarda por separado. La clave demo es pública, y el almacén local no sustituye un HSM ni protege frente a un atacante con privilegios o una restauración de estado antiguo.
-- **IDS:** el monitor escucha el bus como un nodo más. Reensambla y verifica mensajes, conserva sus contadores anti-replay y reporta frames malformados, tags inválidos, replay y exceso de frecuencia. En la configuración actual, más de 50 frames en una ventana de un segundo genera alertas DoS.
-- **Política de fallos:** `FailurePolicy` cuenta errores consecutivos por ID y muestra una alerta al alcanzar tres. No desconecta una ECU, no ejecuta una acción sobre el vehículo ni envía una alerta autenticada al IDS.
-- **Ataques de laboratorio:** spoofing inyecta frames no autenticados; replay repite frames válidos capturados; DoS genera una ráfaga. Los scripts de `attacks/` solo actúan en el bus indicado y deben ejecutarse únicamente en el entorno de prueba.
-- **Baseline y métricas:** baseline representa tráfico sin protección; CAN-Secure cifra y autentica. `eval/comparison.py` compara escenarios emparejados. La detección se cuenta por evento de ataque; frames y bytes observados no equivalen a aceptación por una aplicación baseline, y las alertas benignas no son una tasa estadística generalizable.
-
-### Recorrido de un mensaje, paso a paso
-
-1. La aplicación entrega bytes de payload a `SecureECU.send_secure_frame()` en `nodes/secure_ecu.py`. La ECU valida el ID base y el límite de tamaño.
-2. `KeyManager` reserva un contador nuevo y un nonce no reutilizado. HKDF deriva la clave correspondiente al ID base.
-3. `core/crypto.py` cifra el payload con AES-GCM. El ID base y el contador se incluyen como AAD; el resultado es ciphertext, nonce y tag.
-4. `core/frame_codec.py` prepara los bytes de los dos frames. El de datos lleva tipo, contador y ciphertext; el de autenticación lleva tipo, contador, longitud del ciphertext, nonce y tag. Ambos se envían por `python-can` al bus virtual.
-5. La ECU receptora (`SecureECU.receive_and_verify()`) pasa los frames a `FrameReassembler`. Solo continúa cuando reúne un par válido; el contador de ambas partes debe coincidir y el par debe llegar dentro del límite de espera.
-6. La ECU consulta `ReplayGuard`. Si el contador es nuevo, usa `KeyManager` y AES-GCM para verificar el tag y descifrar. Solo tras una verificación correcta marca el contador como aceptado y devuelve el payload a la aplicación. Fallos de formato, autenticación, timeout o replay se rechazan y se registran en `FailurePolicy`.
-7. En paralelo, `IDSMonitor` escucha copias de los frames, aplica reensamblaje, autenticación y anti-replay y cuenta alertas. También calcula frecuencia de frames para señalar DoS; una alerta IDS es evidencia de detección, no una mitigación automática.
-
-### Qué ejecuta cada módulo de evaluación
-
-- `python3 -m eval.manual_test --all`: 14 comprobaciones de integración/regresión del protocolo, el IDS, límites de trama, persistencia, rotación y concurrencia. Reporta cada escenario al terminarlo y un resumen con grupos y tiempo total.
-- `python3 -m eval.comparison --runs 3 --dos-count 100`: por cada corrida prueba spoofing, replay, DoS y tráfico benigno en baseline y modo protegido. Imprime el estado de cada escenario al terminarlo y al final desglosa detección por tipo, frames observados, aceptación protegida, falsas alertas benignas, overhead y latencias locales.
-- `eval/baseline_run.py` y `eval/secure_run.py`: demostraciones individuales; no sustituyen al runner comparable.
-
-Ambos runners usan el bus virtual de `python-can`. Sus resultados validan los casos codificados, no certifican el protocolo ni predicen el comportamiento del hardware o del vehículo.

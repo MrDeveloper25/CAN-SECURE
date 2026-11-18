@@ -12,11 +12,7 @@ from contextlib import redirect_stdout
 from cryptography.exceptions import InvalidTag
 
 from core.crypto import DEMO_KEY
-from core.frame_codec import (
-    CAN_FD_DLC_LENGTHS,
-    MAX_PLAINTEXT_SIZE,
-    FrameCodec,
-)
+from core.frame_codec import (CAN_FD_DLC_LENGTHS, MAX_PLAINTEXT_SIZE, FrameCodec)
 from core.key_manager import KeyManager
 from core.replay_guard import ReplayGuard
 from nodes.ids_monitor import IDSMonitor
@@ -68,13 +64,18 @@ def _protected_frames(base_id: int, sequence: int, payload: bytes):
         ),
     )
 
-
+# Funcion para probar los mensajes, regresa un booleano sobre si el mensaje pasó la prueba o no.
 def test_valid_message() -> bool:
+    # Nombre del mensaje (Esto es principalmente para que sea humanamente lejible)
     name = "Mensaje legítimo"
+    # Nombre del canal (_channel unicamente regresa una string con el nombre del argumento y un identificador UUID en hexadecimal).
     channel = _channel("valid")
+    # Crear dos nodos diferentes, uno de envio y otro de receptor, se usa el mismo canal para que sean capaces de escucharse mutuamente
     sender = SecureECU(channel=channel)
     receiver = SecureECU(channel=channel)
+    # El mensaje en si mismo en formato de bytes.
     payload = b"ENGINE_RPM_3000"
+    
     try:
         sender.send_secure_frame(0x100, payload)
         received = receiver.receive_and_verify(timeout=0.5)
