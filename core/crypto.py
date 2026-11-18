@@ -19,9 +19,16 @@ class CryptoManager:
 
         self._cipher = AESGCM(secret_key)
 
-    def encrypt(self, plaintext: bytes, associated_data: bytes) -> tuple[bytes, bytes, bytes]:
-        """Cifra con AES-GCM y devuelve nonce, ciphertext y tag por separado."""
-        nonce = os.urandom(AES_GCM_NONCE_SIZE)
+    def encrypt(
+        self,
+        plaintext: bytes,
+        associated_data: bytes,
+        nonce: bytes | None = None,
+    ) -> tuple[bytes, bytes, bytes]:
+        """Cifra con AES-GCM; el nonce puede provenir del gestor persistente."""
+        nonce = os.urandom(AES_GCM_NONCE_SIZE) if nonce is None else nonce
+        if not isinstance(nonce, bytes) or len(nonce) != AES_GCM_NONCE_SIZE:
+            raise ValueError("El nonce AES-GCM debe tener exactamente 12 bytes.")
         ciphertext_and_tag = self._cipher.encrypt(nonce, plaintext, associated_data)
         return nonce, ciphertext_and_tag[:-AES_GCM_TAG_SIZE], ciphertext_and_tag[-AES_GCM_TAG_SIZE:]
 
