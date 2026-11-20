@@ -1,0 +1,14 @@
+{
+  "scenario": "secure",
+  "legit_sent": 5,
+  "attack_types_total": 3,
+  "ids_metrics": {
+    "total_frames": 73,
+    "valid_frames": 5,
+    "spoofing_detected": 1,
+    "replay_detected": 1,
+    "dos_alerts": 23,
+    "hmac_verify_count": 5,
+    "hmac_verify_time_s": 8.040000011533266e-05
+  }
+}

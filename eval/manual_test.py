@@ -14,6 +14,7 @@ from cryptography.exceptions import InvalidTag
 from core.crypto import DEMO_KEY
 from core.frame_codec import (CAN_FD_DLC_LENGTHS, MAX_PLAINTEXT_SIZE, FrameCodec)
 from core.key_manager import KeyManager
+from core.platform_compat import IS_WINDOWS
 from core.replay_guard import ReplayGuard
 from nodes.ids_monitor import IDSMonitor
 from nodes.secure_ecu import SecureECU
@@ -352,15 +353,25 @@ def test_persistent_key_state() -> bool:
             next_aad,
         )
         restarted_guard = ReplayGuard(replay_path)
-        file_mode = stat.S_IMODE(os.stat(state_path).st_mode)
-        os.chmod(state_path, 0o644)
-        insecure_mode_rejected = False
-        try:
-            KeyManager.persistent(state_path)
-        except PermissionError:
-            insecure_mode_rejected = True
-        finally:
-            os.chmod(state_path, 0o600)
+        if IS_WINDOWS:
+            # Windows no tiene bits de permisos POSIX; el almacen depende de las
+            # ACLs del perfil y esta verificacion no aplica.
+            permissions_ok = True
+            permissions_observed = "permisos POSIX=no aplica en Windows"
+        else:
+            file_mode = stat.S_IMODE(os.stat(state_path).st_mode)
+            os.chmod(state_path, 0o644)
+            insecure_mode_rejected = False
+            try:
+                KeyManager.persistent(state_path)
+            except PermissionError:
+                insecure_mode_rejected = True
+            finally:
+                os.chmod(state_path, 0o600)
+            permissions_ok = file_mode == 0o600 and insecure_mode_rejected
+            permissions_observed = (
+                f"permisos={file_mode:o}, permisos inseguros rechazados={insecure_mode_rejected}"
+            )
         passed = (
             first_key == receiver_manager.get_key() == restarted_manager.get_key()
             and first_plaintext == b"PERSISTED_MESSAGE"
@@ -368,14 +379,13 @@ def test_persistent_key_state() -> bool:
             and next_sequence == first_sequence + 1
             and next_nonce != first_nonce
             and not restarted_guard.is_valid_sequence(base_id, first_sequence)
-            and file_mode == 0o600
-            and insecure_mode_rejected
+            and permissions_ok
         )
         observed = (
             f"misma clave={first_key == restarted_manager.get_key()}, "
             f"secuencia tras reinicio={next_sequence}, nonce distinto={next_nonce != first_nonce}, "
             f"replay tras reinicio rechazado={not restarted_guard.is_valid_sequence(base_id, first_sequence)}, "
-            f"permisos={file_mode:o}, permisos inseguros rechazados={insecure_mode_rejected}"
+            f"{permissions_observed}"
         )
         return _report(
             name,

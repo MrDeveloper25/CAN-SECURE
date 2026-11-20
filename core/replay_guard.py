@@ -1,4 +1,3 @@
-import fcntl
 import json
 import os
 import stat
@@ -6,6 +5,14 @@ import tempfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+from core.platform_compat import (
+    fsync_directory,
+    has_insecure_mode,
+    lock_exclusive,
+    make_private,
+    unlock,
+)
 
 MAX_SEQUENCE = 0xFFFFFFFF
 
@@ -32,7 +39,7 @@ class ReplayGuard:
         if parent.is_symlink() or not parent.is_dir():
             raise ValueError("El directorio anti-replay debe ser un directorio real.")
         mode = stat.S_IMODE(parent.stat().st_mode)
-        if mode & 0o077:
+        if has_insecure_mode(mode):
             raise PermissionError(
                 f"El directorio anti-replay debe tener permisos privados (actual: {mode:o})."
             )
@@ -47,12 +54,12 @@ class ReplayGuard:
         except OSError as error:
             raise PermissionError("No se pudo abrir de forma segura el bloqueo anti-replay.") from error
         try:
-            os.fchmod(fd, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            make_private(fd)
+            lock_exclusive(fd)
             try:
                 yield
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                unlock(fd)
         finally:
             os.close(fd)
 
@@ -60,7 +67,7 @@ class ReplayGuard:
         if self._state_path.is_symlink():
             raise PermissionError("El archivo anti-replay no puede ser un enlace simbolico.")
         info = self._state_path.stat()
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+        if not stat.S_ISREG(info.st_mode) or has_insecure_mode(info.st_mode):
             raise PermissionError("El estado anti-replay debe ser un archivo regular y privado.")
         try:
             state = json.loads(self._state_path.read_bytes())
@@ -92,17 +99,13 @@ class ReplayGuard:
         encoded = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("ascii")
         fd, temporary_path = tempfile.mkstemp(prefix=".replay-state-", dir=self._state_path.parent)
         try:
-            os.fchmod(fd, 0o600)
+            make_private(fd)
             with os.fdopen(fd, "wb") as state_file:
                 state_file.write(encoded)
                 state_file.flush()
                 os.fsync(state_file.fileno())
             os.replace(temporary_path, self._state_path)
-            directory_fd = os.open(self._state_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            fsync_directory(self._state_path.parent)
         finally:
             if os.path.exists(temporary_path):
                 os.unlink(temporary_path)
