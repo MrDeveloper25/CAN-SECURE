@@ -1,6 +1,7 @@
 Set-Content -Path .gitignore -Value @"
 # Entornos virtuales
 .venv/
+.venv-win/
 venv/
 env/
 

@@ -1,0 +1,7 @@
+{
+  "scenario": "baseline",
+  "legit_sent": 5,
+  "attack_types_total": 3,
+  "frames_accepted_without_verification": 67,
+  "attacks_detected": 0
+}
